@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI와 2장 섯다 (실전/손익내역/참가비)</title>
+  <style>
+    body { font-family: 'Pretendard', Arial, sans-serif; background: #1b1e23; color: #fff; margin: 0; }
+    #container { width: 450px; margin: 24px auto; background: #262a31; border-radius: 18px; box-shadow: 0 8px 32px #0005; padding: 24px; }
+    .hand { display: flex; gap: 6px; margin-bottom: 6px; }
+    .card { font-size: 26px; background: #333; border-radius: 10px; padding: 10px 16px; min-width: 44px; text-align: center; }
+    .open { background: #ffe06b; color: #a4400b; font-weight: bold; }
+    .hidden { background: #444; color: #333; }
+    #controls button, #controls input[type="number"] { font-size: 16px; margin-right: 4px; padding: 6px 12px; border-radius: 8px; border: none; background: #8cd3ff; color: #192436; cursor: pointer; }
+    #controls input[type="number"] { width: 120px; background: #fff; color: #192436; }
+    #controls button:disabled { background: #999; cursor: not-allowed; }
+    #pot, #msg, #my-status, #bet-status { margin-bottom: 12px; }
+    #rank-list { position: fixed; right: 18px; top: 20px; width: 250px; background: #222; border-radius: 16px; box-shadow: 0 2px 8px #0008; padding: 12px; font-size: 14px;}
+    #rank-list h3 { font-size: 17px; margin-top: 0; color: #ffe06b;}
+    #rank-list ul { margin: 0; padding-left: 14px;}
+    #rank-list li { margin-bottom: 2px; }
+    label { font-size: 15px; }
+    #profit-summary {margin: 6px 0 4px 0;}
+    #profit-log {max-height: 160px; overflow:auto; background:#18191a; border-radius:10px; padding:7px 14px; font-size:13px; margin:0;}
+  </style>
+</head>
+<body>
+<div id="container">
+  <div id="ai-area">
+    <div>AI 잔액: <span id="ai-money">1000000</span></div>
+    <div class="hand" id="ai-hand"></div>
+  </div>
+  <div id="pot">현재 판돈: <span id="pot-amount">0</span></div>
+  <div id="bet-status"></div>
+  <div id="msg"></div>
+  <div id="my-area">
+    <div>내 잔액: <span id="my-money">1000000</span></div>
+    <div class="hand" id="my-hand"></div>
+    <div id="my-status"></div>
+  </div>
+  <div id="controls">
+    <input id="bet-amount" type="number" min="10000" step="10000" value="10000"/>
+    <button id="btn-bet">베팅</button>
+    <button id="btn-call">콜</button>
+    <button id="btn-raise">레이즈</button>
+    <button id="btn-allin">올인</button>
+    <button id="btn-fold">다이</button>
+    <button id="btn-next">다음 판</button>
+  </div>
+</div>
+<div id="rank-list">
+  <h3>2장 섯다 족보</h3>
+  <ul>
+    <li>38광땡 &gt; 18광땡 &gt; 13광땡</li>
+    <li>장땡 &gt; 9땡 ~ 1땡</li>
+    <li>알리 &gt; 독사 &gt; 구삥 &gt; 장삥 &gt; 장사</li>
+    <li>세륙 &gt; 갑오 &gt; 평끗</li>
+    <li>망통(0끗)</li>
+  </ul>
+  <div style="margin-top:18px;">
+    <b>💸 내 손익 기록</b>
+    <div id="profit-summary">누적 손익: 0원</div>
+    <ul id="profit-log"><li>아직 기록 없음</li></ul>
+  </div>
+</div>
+<script>
+const CARD_NAMES = [
+  '1광', '2', '3광', '4', '5', '6', '7', '8', '9', '10',
+  '1',   '2', '3',   '4', '5', '6', '7', '8', '9', '10'
+];
+const MIN_BET = 10000;
+const ANTE = 10000;
+
+// 손익 기록 변수
+let profitLog = []; // [{change:+n, after:금액, desc:승패...}]
+let profitSum = 0;
+let lastMyMoney = 1000000;
+
+let gameOver = false;
+let gameState = {
+  ai: { hand: [], money: 1000000 },
+  me: { hand: [], money: 1000000 },
+  pot: 0,
+  turn: 'me',
+  phase: 'betting',
+  msg: '',
+  bettingTurn: 1,
+  lastBet: 0,
+  requiredCall: 0,
+  aiFold: false,
+  meFold: false,
+  whoRaised: null
+};
+
+function dealTwoCards(exclude=[]) {
+  let deck = [...Array(20).keys()].filter(x => !exclude.includes(x));
+  let a = deck.splice(Math.floor(Math.random()*deck.length), 1)[0];
+  let b = deck.splice(Math.floor(Math.random()*deck.length), 1)[0];
+  return [a, b];
+}
+
+function resetRound() {
+  lastMyMoney = gameState.me.money;
+  if (gameState.me.money < ANTE) {
+    gameState.msg = "내 잔액 부족! 패배 😭";
+    gameOver = true;
+    render();
+    return;
+  }
+  if (gameState.ai.money < ANTE) {
+    gameState.msg = "AI 잔액 부족! 승리 🏆";
+    gameOver = true;
+    render();
+    return;
+  }
+  gameState.me.money -= ANTE;
+  gameState.ai.money -= ANTE;
+  gameState.pot = ANTE * 2;
+  gameState.me.hand = dealTwoCards();
+  gameState.ai.hand = dealTwoCards(gameState.me.hand);
+  gameState.aiFold = false;
+  gameState.meFold = false;
+  gameState.phase = 'betting';
+  gameState.turn = 'me';
+  gameState.msg = "내 차례! (1턴, 참가비 만원씩 냄)";
+  gameState.bettingTurn = 1;
+  gameState.lastBet = 0;
+  gameState.requiredCall = 0;
+  gameState.whoRaised = null;
+  gameOver = false;
+  render();
+}
+
+function render() {
+  document.getElementById('ai-hand').innerHTML =
+    drawHand(gameState.ai.hand, gameState.phase, false);
+  document.getElementById('ai-money').innerText = gameState.ai.money;
+  document.getElementById('my-hand').innerHTML =
+    drawHand(gameState.me.hand, gameState.phase, true);
+  document.getElementById('my-money').innerText = gameState.me.money;
+  document.getElementById('pot-amount').innerText = gameState.pot;
+  document.getElementById('msg').innerText = gameState.msg;
+
+  let myRank = get2Rank(gameState.me.hand);
+  let cards = gameState.me.hand.map(x=>CARD_NAMES[x]).join(', ');
+  document.getElementById('my-status').innerHTML = `내 패: ${cards} / 족보: ${myRank.name}`;
+
+  document.getElementById('bet-status').innerText =
+    `턴: ${gameState.bettingTurn} / 마지막 배팅: ${gameState.lastBet ? gameState.lastBet+'원' : '없음'} / 콜 필요: ${gameState.requiredCall ? gameState.requiredCall+'원' : '없음'}`;
+
+  let turn = gameState.turn === 'me' && gameState.phase === 'betting' && !gameState.meFold && !gameState.aiFold && !gameOver;
+  let canRaise = (gameState.bettingTurn < 3) && gameState.requiredCall > 0 && gameState.me.money > gameState.requiredCall;
+  let canBet = (gameState.requiredCall === 0) && (gameState.bettingTurn === 1) && !gameOver;
+  let canCall = gameState.requiredCall > 0 && !gameOver && gameState.me.money >= gameState.requiredCall;
+  document.getElementById('btn-bet').disabled = !(turn && canBet && gameState.me.money >= MIN_BET);
+  document.getElementById('btn-raise').disabled = !(turn && canRaise);
+  document.getElementById('btn-call').disabled = !(turn && canCall);
+  document.getElementById('btn-allin').disabled = !(turn && gameState.me.money > 0 && !gameOver);
+  document.getElementById('btn-fold').disabled = !(turn && !gameOver);
+  document.getElementById('btn-next').disabled = !(gameState.phase === 'end' || gameState.meFold || gameState.aiFold || gameOver);
+
+  // 손익내역 렌더링
+  let profitBox = document.getElementById('profit-log');
+  let profitSumBox = document.getElementById('profit-summary');
+  if (profitBox && profitLog.length) {
+    profitBox.innerHTML = profitLog.map(p =>
+      `<li>${p.desc ? "["+p.desc+"] " : ""}<b style="color:${p.change>=0?"#ffeb3b":"#80b2ff"};">${p.change>=0?"+":""}${p.change}원</b> (잔액:${p.after}원)</li>`
+    ).join('');
+    profitSumBox.innerHTML = `누적 손익: <b style="color:${profitSum>=0?"#ffeb3b":"#80b2ff"};">${profitSum>=0?"+":""}${profitSum}원</b>`;
+  } else if (profitBox) {
+    profitBox.innerHTML = "<li>아직 기록 없음</li>";
+    profitSumBox.innerHTML = "누적 손익: 0원";
+  }
+}
+
+function drawHand(hand, phase, revealAll) {
+  let out = '';
+  for (let i = 0; i < hand.length; ++i) {
+    if (phase === 'showdown' || revealAll) out += `<span class="card open">${CARD_NAMES[hand[i]]}</span>`;
+    else out += `<span class="card hidden">?</span>`;
+  }
+  return out;
+}
+
+// endRound에 손익 계산 및 기록!
+function endRound(msg, desc) {
+  gameState.msg = msg;
+  gameState.phase = 'end';
+
+  let now = gameState.me.money;
+  let diff = now - lastMyMoney;
+  profitLog.unshift({ change: diff, after: now, desc: desc||msg });
+  profitSum += diff;
+
+  render();
+}
+
+function nextPhase() {
+  gameState.phase = 'showdown';
+  showDown();
+}
+
+function showDown() {
+  const myRank = get2Rank(gameState.me.hand);
+  const aiRank = get2Rank(gameState.ai.hand);
+  let winner = null;
+  if (gameState.meFold && !gameState.aiFold) winner = 'ai';
+  else if (gameState.aiFold && !gameState.meFold) winner = 'me';
+  else if (myRank.value > aiRank.value) winner = 'me';
+  else if (aiRank.value > myRank.value) winner = 'ai';
+  if (winner === 'me') {
+    gameState.me.money += gameState.pot;
+    endRound(`내가 이김! (${myRank.name} > ${aiRank.name})`, "승");
+  } else if (winner === 'ai') {
+    gameState.ai.money += gameState.pot;
+    endRound(`AI 승리 (${aiRank.name} > ${myRank.name})`, "패");
+  } else {
+    gameState.me.money += gameState.pot/2;
+    gameState.ai.money += gameState.pot/2;
+    endRound(`무승부 (${myRank.name} = ${aiRank.name})`, "무승부");
+  }
+}
+
+function playerAct(type) {
+  if (gameOver) return;
+  let betInput = parseInt(document.getElementById('bet-amount').value) || MIN_BET;
+  let callAmount = gameState.requiredCall;
+  if (type === 'fold') {
+    gameState.meFold = true;
+    gameState.ai.money += gameState.pot;
+    gameState.phase = 'end';
+    endRound("다이! 다음 판을 누르세요. (AI 승리)", "폴드(패)");
+    return;
+  }
+  if (type === 'bet') {
+    let bet = Math.max(MIN_BET, Math.min(gameState.me.money, betInput));
+    if (bet <= 0) return;
+    gameState.me.money -= bet;
+    gameState.pot += bet;
+    gameState.lastBet = bet;
+    gameState.requiredCall = bet;
+    gameState.whoRaised = 'me';
+    gameState.turn = 'ai';
+    gameState.bettingTurn = 1;
+    gameState.msg = `내가 베팅(${bet})!`;
+    render();
+    setTimeout(aiAct, 700);
+    return;
+  }
+  if (type === 'call') {
+    if (callAmount > gameState.me.money) callAmount = gameState.me.money;
+    gameState.me.money -= callAmount;
+    gameState.pot += callAmount;
+    if (gameState.bettingTurn === 2 || gameState.whoRaised === 'me') {
+      nextPhase();
+      return;
+    }
+    gameState.turn = 'ai';
+    gameState.bettingTurn += 1;
+    gameState.msg = `내가 콜(${callAmount})!`;
+    render();
+    setTimeout(aiAct, 700);
+    return;
+  }
+  if (type === 'raise') {
+    let raiseInput = betInput;
+    if (raiseInput < MIN_BET) raiseInput = MIN_BET;
+    let totalRaise = callAmount + raiseInput;
+    if (totalRaise > gameState.me.money) totalRaise = gameState.me.money;
+    gameState.me.money -= totalRaise;
+    gameState.pot += totalRaise;
+    gameState.lastBet = raiseInput;
+    gameState.requiredCall = raiseInput;
+    gameState.whoRaised = 'me';
+    gameState.turn = 'ai';
+    gameState.bettingTurn += 1;
+    gameState.msg = `내가 레이즈(콜${callAmount}+${raiseInput})!`;
+    render();
+    setTimeout(aiAct, 700);
+    return;
+  }
+  if (type === 'allin') {
+    let bet = gameState.me.money;
+    gameState.pot += bet;
+    gameState.lastBet = bet;
+    gameState.requiredCall = bet;
+    gameState.me.money = 0;
+    gameState.whoRaised = 'me';
+    gameState.turn = 'ai';
+    gameState.bettingTurn += 1;
+    gameState.msg = '내가 올인!';
+    render();
+    setTimeout(aiAct, 700);
+    return;
+  }
+}
+
+function aiAct() {
+  if (gameOver || gameState.phase !== 'betting' || gameState.aiFold) return;
+  let myRank = get2Rank(gameState.ai.hand).value;
+  let callAmount = gameState.requiredCall;
+  let canRaise = (gameState.bettingTurn < 3) && callAmount > 0 && gameState.ai.money > callAmount;
+  let action;
+  let aiBet = MIN_BET + Math.floor(Math.random() * 5) * MIN_BET;
+  if (callAmount === 0) {
+    if (myRank > 80 && Math.random() < 0.25) action = 'raise';
+    else if (Math.random() < 0.7) action = 'bet';
+    else action = 'fold';
+  } else {
+    if (myRank > 90 && canRaise && Math.random() < 0.2) action = 'raise';
+    else if ((myRank > 60 && Math.random() < 0.8) || Math.random() < 0.7) action = 'call';
+    else action = 'fold';
+  }
+  if (action === 'fold') {
+    gameState.aiFold = true;
+    gameState.me.money += gameState.pot;
+    gameState.phase = 'end';
+    endRound("AI: 다이! 다음 판을 누르세요. (내 승리)", "AI 폴드(승)");
+    return;
+  }
+  if (action === 'bet') {
+    let bet = Math.min(gameState.ai.money, aiBet);
+    gameState.ai.money -= bet;
+    gameState.pot += bet;
+    gameState.lastBet = bet;
+    gameState.requiredCall = bet;
+    gameState.whoRaised = 'ai';
+    gameState.turn = 'me';
+    gameState.bettingTurn = 1;
+    gameState.msg = `AI: 베팅(${bet})!`;
+    render();
+    return;
+  }
+  if (action === 'call') {
+    let c = Math.min(gameState.ai.money, callAmount);
+    gameState.ai.money -= c;
+    gameState.pot += c;
+    if (gameState.bettingTurn === 2 || gameState.whoRaised === 'ai') {
+      nextPhase();
+      return;
+    }
+    gameState.turn = 'me';
+    gameState.bettingTurn += 1;
+    gameState.msg = `AI: 콜(${c})!`;
+    render();
+    return;
+  }
+  if (action === 'raise') {
+    let raiseAmount = Math.min(gameState.ai.money - callAmount, aiBet * 2);
+    if (raiseAmount < MIN_BET) raiseAmount = MIN_BET;
+    let totalRaise = callAmount + raiseAmount;
+    if (totalRaise > gameState.ai.money) totalRaise = gameState.ai.money;
+    gameState.ai.money -= totalRaise;
+    gameState.pot += totalRaise;
+    gameState.lastBet = raiseAmount;
+    gameState.requiredCall = raiseAmount;
+    gameState.whoRaised = 'ai';
+    gameState.turn = 'me';
+    gameState.bettingTurn += 1;
+    gameState.msg = `AI: 레이즈(콜${callAmount}+${raiseAmount})!`;
+    render();
+    return;
+  }
+}
+
+function get2Rank(hand) {
+  let a = hand[0], b = hand[1];
+  let nums = [(a%10)+1, (b%10)+1];
+  let names = [CARD_NAMES[a], CARD_NAMES[b]];
+  if ((names.includes('3광')&&names.includes('8'))&&(!names.includes('1광'))) return {value:99, name:'38광땡'};
+  if ((names.includes('1광')&&names.includes('8'))) return {value:98, name:'18광땡'};
+  if ((names.includes('1광')&&names.includes('3광'))) return {value:97, name:'13광땡'};
+  if (nums[0]===nums[1]) return {value:80+nums[0], name:`${nums[0]}땡`};
+  if ((nums.includes(1)&&nums.includes(2))) return {value:73, name:'알리'};
+  if ((nums.includes(1)&&nums.includes(4))) return {value:72, name:'독사'};
+  if ((nums.includes(1)&&nums.includes(9))) return {value:71, name:'구삥'};
+  if ((nums.includes(1)&&nums.includes(10))) return {value:70, name:'장삥'};
+  if ((nums.includes(1)&&nums.includes(6))) return {value:69, name:'장사'};
+  if ((nums.includes(4)&&nums.includes(6))) return {value:68, name:'세륙'};
+  let sum = (nums[0]+nums[1])%10;
+  if (sum===9) return {value:19, name:'갑오'};
+  if (sum) return {value:10+sum, name:`${sum}끗`};
+  return {value:0, name:'망통'};
+}
+
+document.getElementById('btn-bet').onclick = ()=>playerAct('bet');
+document.getElementById('btn-raise').onclick = ()=>playerAct('raise');
+document.getElementById('btn-call').onclick = ()=>playerAct('call');
+document.getElementById('btn-allin').onclick = ()=>playerAct('allin');
+document.getElementById('btn-fold').onclick = ()=>playerAct('fold');
+document.getElementById('btn-next').onclick = ()=>resetRound();
+
+resetRound();
+</script>
+</body>
+</html>
